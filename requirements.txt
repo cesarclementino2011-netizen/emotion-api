@@ -4,3 +4,4 @@ pydub
 openai-whisper
 transformers
 torch
+speechbrain
