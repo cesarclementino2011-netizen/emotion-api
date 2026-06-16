@@ -1,39 +1,35 @@
 from flask import Flask, request, jsonify
 import tempfile
 import os
-import whisper
-from transformers import pipeline
 from pydub import AudioSegment
+from speechbrain.inference.classifiers import EncoderClassifier
 
 app = Flask(__name__)
 
-# segurança básica
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
-# modelos carregados uma vez
-whisper_model = whisper.load_model("base")
-
-emotion_model = pipeline(
-    "text-classification",
-    model="j-hartmann/emotion-english-distilroberta-base"
+classifier = EncoderClassifier.from_hparams(
+    source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+    savedir="emotion_model"
 )
 
-# emoções finais
 EMOTION_MAP = {
-    "joy": "feliz 😄",
-    "anger": "raiva 😡",
-    "sadness": "triste 😢",
-    "fear": "medo 😨",
-    "surprise": "surpreso 😲",
-    "neutral": "neutro 😐",
-    "love": "amor ❤️"
+    "ang": "raiva 😡",
+    "hap": "feliz 😄",
+    "sad": "triste 😢",
+    "neu": "neutro 😐"
 }
 
 
 def convert_to_wav(input_path):
-    audio = AudioSegment.from_file(input_path)
     wav_path = input_path + ".wav"
+
+    audio = AudioSegment.from_file(input_path)
+    audio = audio.set_channels(1)
+    audio = audio.set_frame_rate(16000)
+
     audio.export(wav_path, format="wav")
+
     return wav_path
 
 
@@ -41,61 +37,68 @@ def convert_to_wav(input_path):
 def home():
     return jsonify({
         "status": "online",
-        "service": "emotion-api"
+        "service": "voice-emotion-api"
     })
 
 
 @app.route("/emotion", methods=["POST"])
 def emotion():
 
-    tmp_path = None
-    wav_path = None
+    temp_input = None
+    temp_wav = None
 
     try:
+
         if "audio" not in request.files:
-            return jsonify({"error": "audio missing"}), 400
+            return jsonify({
+                "error": "Campo 'audio' não enviado"
+            }), 400
 
-        audio = request.files["audio"]
+        audio_file = request.files["audio"]
 
-        # salva qualquer formato (ogg/mp3/wav)
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            audio.save(tmp.name)
-            tmp_path = tmp.name
+            audio_file.save(tmp.name)
+            temp_input = tmp.name
 
-        # converte para wav
-        wav_path = convert_to_wav(tmp_path)
+        temp_wav = convert_to_wav(temp_input)
 
-        # áudio → texto
-        result = whisper_model.transcribe(wav_path, language="pt")
-        text = result["text"].strip()
+        out_prob, score, index, text_lab = classifier.classify_file(temp_wav)
 
-        # emoção no texto
-        emotion_result = emotion_model(text)[0]
+        raw_emotion = text_lab[0]
 
-        label = emotion_result["label"]
-        score = float(emotion_result["score"])
+        emotion = EMOTION_MAP.get(
+            raw_emotion.lower(),
+            raw_emotion
+        )
 
-        emotion = EMOTION_MAP.get(label, label)
+        confidence = float(score)
 
         return jsonify({
-            "transcription": text,
             "emotion": emotion,
-            "raw_label": label,
-            "confidence": round(score, 4)
+            "raw_label": raw_emotion,
+            "confidence": round(confidence, 4)
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": str(e)
+        }), 500
 
     finally:
+
         try:
-            if tmp_path and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-            if wav_path and os.path.exists(wav_path):
-                os.remove(wav_path)
+            if temp_input and os.path.exists(temp_input):
+                os.remove(temp_input)
+
+            if temp_wav and os.path.exists(temp_wav):
+                os.remove(temp_wav)
+
         except:
             pass
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(
+        host="0.0.0.0",
+        port=8080
+    )
