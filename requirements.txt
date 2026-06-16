@@ -1,2 +1,6 @@
 flask
 gunicorn
+pydub
+openai-whisper
+transformers
+torch
